@@ -1,0 +1,144 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: demo2
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: simple-rest-server-sa
+  namespace: demo2
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: simple-rest-server-configmap
+  namespace: demo2
+data:
+  application.properties: |
+    server.port=8888
+    spring.datasource.url=jdbc:h2:mem:testdb
+    spring.datasource.driverClassName=org.h2.Driver
+    spring.datasource.username=sa
+    spring.datasource.password=password
+    spring.jpa.database-platform=org.hibernate.dialect.H2Dialect
+    spring.jpa.hibernate.ddl-auto=create
+    spring.jpa.show-sql=true
+    image.path=/tmp/images
+    app.version=1.0.0
+    pubsub.topic=TOPIC_NAME
+    pubsub.subscription=SUBSCRIPTION_NAME
+    sleep.min=4000
+    sleep.max=6000
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  labels:
+    app: simple-rest-server
+  name: simple-rest-server-hpa
+  namespace: demo2
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: simple-rest-server
+  minReplicas: 1
+  maxReplicas: 10
+  metrics:
+    - type: External
+      external:
+        metric:
+          name: "pubsub.googleapis.com|subscription|num_undelivered_messages"
+          selector:
+            matchLabels:
+              resource.labels.subscription_id: "REPLACE_WITH_SUBSCRIPTION_ID"
+        target:
+          type: AverageValue
+          averageValue: "30"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: simple-rest-server-service
+  namespace: demo2
+  labels:
+    app: simple-rest-server
+  # # Use annotations based on your CSP
+  #annotations:
+  #  cloud.google.com/neg: '{"ingress": true}'
+spec:
+  type: ClusterIP
+  selector:
+    app: simple-rest-server
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: http-port
+      name: http
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  labels:
+    app: simple-rest-server
+  name: simple-rest-server-ingress
+  # Use annotations based on your CSP
+  #annotations:
+    #kubernetes.io/ingress.class: "gce"
+    #kubernetes.io/ingress.global-static-ip-name: "rest-server-api"
+  namespace: demo2
+spec:
+  rules:
+    - host: "REPLACE_WITH_HOSTNAME"
+      http:
+        paths:
+          - backend:
+              service:
+                name: simple-rest-server-service
+                port:
+                  name: http
+            path: /
+            pathType: Prefix
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: simple-rest-server
+  namespace: demo2
+  labels:
+    app: simple-rest-server
+spec:
+  selector:
+    matchLabels:
+      app: simple-rest-server
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: simple-rest-server
+    spec:
+      serviceAccountName: simple-rest-server-sa
+      containers:
+        - name: server
+          image: REPO_URL/simple-rest-server:0.2
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8888
+              name: http-port
+              protocol: TCP
+          resources:
+            limits:
+              cpu: 1500m
+            requests:
+              cpu: 1000m
+          volumeMounts:
+          - name: config
+            mountPath: /app/application.properties
+            subPath: application.properties
+            readOnly: true
+      volumes:
+      - name: config
+        configMap:
+          name: simple-rest-server-configmap
